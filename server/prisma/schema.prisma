@@ -1,0 +1,207 @@
+// =============================================================================
+// Roxiler Store Rating Platform — Prisma Schema
+// Phase 1B: Database Architecture
+// =============================================================================
+//
+// ER relationships (conceptual):
+//
+//   User  1 ──── N  Store    (a STORE_OWNER may own one or more stores)
+//   User  1 ──── N  Rating   (a USER submits ratings)
+//   Store 1 ──── N  Rating   (a Store receives ratings)
+//
+// The average rating for a store is NEVER stored as a column.
+// It is calculated on-demand via: AVG(rating) WHERE storeId = ?
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// Role controls what actions a user may perform in the application layer.
+/// Using a Prisma enum maps to a PostgreSQL native ENUM type, which prevents
+/// arbitrary strings from being stored in the database.
+enum Role {
+  ADMIN       // Can view all users, stores, and ratings; dashboard access
+  USER        // Can browse stores and submit/update ratings
+  STORE_OWNER // Can view their own stores and the ratings those stores received
+}
+
+// =============================================================================
+// User
+// =============================================================================
+
+model User {
+  // ── Primary Key ────────────────────────────────────────────────────────────
+  // UUID avoids sequential ID enumeration (security) and works well
+  // in distributed environments. Prisma generates UUID values using
+  // uuid() as the schema default.
+  id String @id @default(uuid())
+
+  // ── Fields ─────────────────────────────────────────────────────────────────
+  /// Full name of the user. Required by the assignment.
+  name String
+
+  /// Login identifier. Must be unique across the entire system.
+  email String @unique
+
+  /// bcrypt hash of the user's password.
+  /// IMPORTANT: plaintext passwords must NEVER be stored here.
+  /// bcrypt hashing is implemented in the auth service (Phase 2).
+  password String
+
+  /// Physical address of the user. Required by the assignment.
+  address String
+
+  /// Role determines what the user can access.
+  /// Defaults to USER — the safest minimum-privilege default.
+  role Role @default(USER)
+
+  // ── Timestamps ─────────────────────────────────────────────────────────────
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  /// Stores that this user owns (applicable when role = STORE_OWNER).
+  /// Role enforcement is done in the application layer, not here.
+  stores Store[]
+
+  /// Ratings this user has submitted (applicable when role = USER).
+  ratings Rating[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  // email: implicit unique index created by @unique above.
+  // name:    admin dashboard "filter users by name" requirement.
+  // address: admin dashboard "filter users by address" requirement.
+  // role:    admin dashboard "filter users by role" requirement;
+  //          also used when looking up all STORE_OWNERs.
+  @@index([name])
+  @@index([address])
+  @@index([role])
+
+  // Map to a lowercase plural table name (PostgreSQL convention).
+  @@map("users")
+}
+
+// =============================================================================
+// Store
+// =============================================================================
+
+model Store {
+  // ── Primary Key ────────────────────────────────────────────────────────────
+  id String @id @default(uuid())
+
+  // ── Fields ─────────────────────────────────────────────────────────────────
+  /// Display name of the store.
+  name String
+
+  /// Contact email for the store. Not unique: the assignment does not require
+  /// store emails to be globally unique. Multiple stores may share a contact
+  /// address (e.g. a chain). Only User.email is unique (login identifier).
+  email String
+
+  /// Physical address of the store.
+  address String
+
+  /// Foreign key pointing to the User who owns this store.
+  /// Non-nullable: every store must have an owner.
+  ownerId String
+
+  // ── Timestamps ─────────────────────────────────────────────────────────────
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  /// The owning user.
+  /// onDelete: Restrict — prevents deleting a User record while they still
+  /// own stores. This protects store data from accidental orphaning.
+  /// Cascade deletion was deliberately rejected: losing a user account
+  /// should NOT silently destroy store records and all associated ratings.
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  /// Ratings this store has received.
+  ratings Rating[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  // email: no index — not a filter/search target in the assignment requirements.
+  // name:    "search stores by name" requirement.
+  // address: "search stores by address" requirement.
+  // ownerId: "find all stores belonging to a store owner" requirement;
+  //          also used for JOIN when loading owner dashboard data.
+  @@index([name])
+  @@index([address])
+  @@index([ownerId])
+
+  @@map("stores")
+}
+
+// =============================================================================
+// Rating
+// =============================================================================
+
+model Rating {
+  // ── Primary Key ────────────────────────────────────────────────────────────
+  id String @id @default(uuid())
+
+  // ── Foreign Keys ───────────────────────────────────────────────────────────
+  /// The user who submitted this rating.
+  userId String
+
+  /// The store being rated.
+  storeId String
+
+  // ── Fields ─────────────────────────────────────────────────────────────────
+  /// Numeric rating value. Allowed range: 1–5 inclusive.
+  /// A database-level CHECK constraint (rating >= 1 AND rating <= 5) is
+  /// added manually in the migration SQL — Prisma's DSL does not support
+  /// CHECK constraints natively. Application-layer validation is enforced
+  /// in storeValidator.js (validateRating middleware).
+  rating Int
+
+  // ── Timestamps ─────────────────────────────────────────────────────────────
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  /// The user who submitted this rating.
+  /// onDelete: Restrict — prevents deleting a User who still has ratings.
+  /// Rationale: A store owner's historical rating data (even from a
+  /// deleted user account) may be needed for audit/reporting. Silent
+  /// cascading deletion of rating rows would corrupt store averages.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  /// The store being rated.
+  /// onDelete: Restrict — prevents deleting a Store while it still has
+  /// ratings. This protects rating history and forces an explicit clean-up
+  /// before a store can be removed.
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  // ── Composite Unique Constraint ────────────────────────────────────────────
+  // CRITICAL BUSINESS RULE: one rating per user per store.
+  // Enforced at the database level via a unique index on (userId, storeId).
+  // Application logic alone is insufficient (race conditions, direct DB writes).
+  @@unique([userId, storeId])
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  // (userId, storeId): covered by the @@unique index above.
+  //   userId is the leading column → efficiently supports:
+  //     "find a user's rating for a specific store"
+  //     "find all ratings submitted by a user"
+  //
+  // storeId: separate index for queries that filter only by store:
+  //   "find all ratings for store X" (used in AVG(rating) aggregates)
+  //   "find ratings for stores owned by owner Y" (JOIN stores ON ownerId)
+  //   The @@unique index starts with userId, so it cannot serve storeId-only
+  //   lookups efficiently — this dedicated index fills that gap.
+  @@index([storeId])
+
+  @@map("ratings")
+}
