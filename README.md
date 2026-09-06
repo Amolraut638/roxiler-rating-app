@@ -3,7 +3,7 @@
 A full-stack store rating application with role-based access control. Users browse and rate stores, Store Owners monitor their store performance, and System Administrators manage the entire platform.
 
 **Live Demo:** https://roxiler-rating-app.vercel.app
-> ⚠️ Replace this URL with the actual deployed URL after deployment.
+
 
 ---
 
@@ -153,8 +153,7 @@ The project is configured for Vercel deployment:
 - **Frontend** — Vite SPA deployed to Vercel with `vercel.json` for React Router SPA routing.
 - **Backend** — Express API deployed to Vercel as a serverless function via `vercel.json`.
 
-Placeholder live URL: https://roxiler-rating-app.vercel.app
-> Replace with your actual deployed URLs after deployment.
+live URL: https://roxiler-rating-app.vercel.app
 
 ### Deployment steps
 
